@@ -25,19 +25,19 @@
 #define NUM_LEDS        95
 #define DATA_PIN        4 // D2 Pin on Wemos mini
 
+const int   timeZone        = 1;     // Central European Time
+bool        autoDST         = true;
+
 IPAddress   timeServerIP; // time.nist.gov NTP server address
 const char* ntpServerName   = "nl.pool.ntp.org";
-const int   timeZone        = 1;     // Central European Time
 const int   NTP_PACKET_SIZE = 48; // NTP time stamp is in the first 48 bytes of the message
 byte        packetBuffer[ NTP_PACKET_SIZE]; //buffer to hold incoming and outgoing packets
 WiFiUDP     Udp;
 unsigned int localPort = 8888;
 
-time_t      fetchTime();
 time_t getNtpTime();
-void digitalClockDisplay();
-void printDigits(int digits);
 void sendNTPpacket(IPAddress &address);
+
 unsigned long   lastdisplayupdate   = 0;
 
 CRGB leds[NUM_LEDS];
@@ -174,7 +174,7 @@ void loop() {
 
         float phase = ((float)(millis()%2000)) / 1000;
         if(phase > 1) phase = 2.0f-phase;
-        for(int i=1;i<5;++i){  // the scanner moves from 0 to(inc) 5, but only 1..4 are actually shown on the four leds
+        for(int i=0;i<4;++i){  // the scanner moves from 0 to(inc) 5, but only 1..4 are actually shown on the four leds
             float intensity = abs((float)(i-1)/3-phase);
             intensity = sqrt(intensity);
             leds[i] = CRGB(255-(255*intensity),0,0);
@@ -318,7 +318,24 @@ time_t getNtpTime()
       secsSince1900 |= (unsigned long)packetBuffer[41] << 16;
       secsSince1900 |= (unsigned long)packetBuffer[42] << 8;
       secsSince1900 |= (unsigned long)packetBuffer[43];
-      return secsSince1900 - 2208988800UL + timeZone * SECS_PER_HOUR;
+      // New time in seconds since Jan 1, 1970
+      unsigned long newTime = secsSince1900 - 2208988800UL +
+        timeZone * SECS_PER_HOUR;
+
+      // Auto DST
+      if (autoDST) {
+          if (isDSTSwitchDay(day(newTime), month(newTime), year(newTime))) {
+            if (month(newTime) == 3 && hour(newTime) >= 2) {
+                newTime += SECS_PER_HOUR;
+            } else if (month(newTime) == 10 && hour(newTime) < 2) {
+                newTime += SECS_PER_HOUR;
+            }
+          } else if (isDST(day(newTime), month(newTime), year(newTime))) {
+            newTime += SECS_PER_HOUR;
+          }
+      }
+
+      return newTime;
     }
   }
   Serial.println("No NTP Response :-(");
@@ -346,4 +363,33 @@ void sendNTPpacket(IPAddress &address)
   Udp.beginPacket(address, 123); //NTP requests are to port 123
   Udp.write(packetBuffer, NTP_PACKET_SIZE);
   Udp.endPacket();
+}
+
+// Check if Daylight saving time (DST) applies
+// Northern Hemisphere - +1 hour between March and October
+bool isDST(int d, int m, int y){
+    bool dst = false;
+    dst = (m > 3 && m < 10); // October-March
+
+    if (m == 3){
+        // Last sunday of March
+        dst = (d >= ((31 - (5 * y /4 + 4) % 7)));
+    }else if (m == 10){
+        // Last sunday of October
+        dst = (d < ((31 - (5 * y /4 + 1) % 7)));
+    }
+
+    return dst;
+}
+
+bool isDSTSwitchDay(int d, int m, int y){
+    bool dst = false;
+    if (m == 3){
+        // Last sunday of March
+        dst = (d == ((31 - (5 * y /4 + 4) % 7)));
+    }else if (m == 10){
+        // Last sunday of October
+        dst = (d == ((31 - (5 * y /4 + 1) % 7)));
+    }
+    return dst;
 }
