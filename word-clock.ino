@@ -25,7 +25,19 @@
 #define NUM_LEDS        95
 #define DATA_PIN        4 // D2 Pin on Wemos mini
 
-time_t          fetchTime();
+IPAddress   timeServerIP; // time.nist.gov NTP server address
+const char* ntpServerName   = "nl.pool.ntp.org";
+const int   timeZone        = 1;     // Central European Time
+const int   NTP_PACKET_SIZE = 48; // NTP time stamp is in the first 48 bytes of the message
+byte        packetBuffer[ NTP_PACKET_SIZE]; //buffer to hold incoming and outgoing packets
+WiFiUDP     Udp;
+unsigned int localPort = 8888;
+
+time_t      fetchTime();
+time_t getNtpTime();
+void digitalClockDisplay();
+void printDigits(int digits);
+void sendNTPpacket(IPAddress &address);
 unsigned long   lastdisplayupdate   = 0;
 
 CRGB leds[NUM_LEDS];
@@ -63,7 +75,8 @@ void setup() {
     Serial.println("Connected!");
     Serial.print("IP address: ");
     Serial.println(WiFi.localIP());
-
+    Serial.println("Starting UDP");
+    Udp.begin(localPort);
     LEDS.addLeds<NEOPIXEL,DATA_PIN>(leds,NUM_LEDS);
     LEDS.setBrightness(87);
     rainbow();
@@ -76,7 +89,7 @@ void setup() {
 
     FastLED.show();
 
-    setSyncProvider(fetchTime);
+    setSyncProvider(getNtpTime);
     setSyncInterval(SYNC_INTERVAL);
 }
 
@@ -88,67 +101,6 @@ void rainbow() {
         FastLED.delay(1000/30); // 30FPS
     }
 }
-
-
-time_t fetchTime() {
-    HTTPClient http;
-
-    Serial.print("[HTTP] begin...\n");
-    http.begin("http://timezone.1sand0s.nl/localtime"); //HTTP
-    Serial.print("[HTTP] GET...\n");
-    // start connection and send HTTP header
-    int httpCode = http.GET();
-    String payload;
-    // httpCode will be negative on error
-    if(httpCode > 0) {
-        // HTTP header has been send and Server response header has been handled
-        Serial.printf("[HTTP] GET... code: %d\n", httpCode);
-
-        // file found at server
-        if(httpCode == HTTP_CODE_OK) {
-            payload = http.getString();
-            Serial.println(payload);
-        }
-    } else {
-        Serial.printf("[HTTP] GET... failed, error: %s\n", http.errorToString(httpCode).c_str());
-        return 0;
-    }
-    http.end();
-
-    StaticJsonBuffer<600> jsonBuffer;
-
-    JsonObject& root = jsonBuffer.parseObject(payload);
-    if (!root.success())
-    {
-        Serial.println("parseObject() failed");
-    }
-
-    tmElements_t tm;
-    tm.Second = root["seconds"];
-    tm.Minute = root["minutes"];
-    tm.Hour   = root["hours"];
-
-    Serial.print("setting time to ");
-    tm.Year = 2016-1970;
-    tm.Day = 15;
-    tm.Month=11;
-    Serial.print(tm.Hour);
-    Serial.print(":");
-    Serial.print(tm.Minute);
-    Serial.print(":");
-    Serial.print(tm.Second);
-    Serial.println();
-
-    time_t res = makeTime(tm);
-    // unsigned long test = makeTime(tm);
-    Serial.print("systemtime is ");
-    Serial.println(res);
-    return res;
-}
-
-
-
-
 
 /*
 
@@ -164,68 +116,9 @@ time_t fetchTime() {
    HET IS KWART VOOR (X+1)
    HET IS TIEN VOOR (X+1)
    HET IS VIJF VOOR (X+1)
-
    HET IS (X+1) UUR
    ...
-
 */
-
-#ifdef WEATHERCLOCK
-#define LIGHT   0
-#define HEAVY   1
-#define RAIN    2
-#define NO      3
-#define FOR     4
-#define IN      5
-#define TEN     6
-#define FIFTEEN   7
-#define TWENTY    8
-#define RAIN2   9
-#define EXPECTED  10
-#define AN      11
-#define NEXT    12
-#define THIRTY    13
-#define FOURTY    14
-#define HOUR    15
-#define FIFTY   16
-#define FIVE    17
-#define MINUTES   18
-
-// letters for weatherclock
-// LIGHTHEAVY
-// RAINOFORIN
-// TENFIFTEEN
-// TWENTYRAIN
-// EXPECTED
-// ANEXTHIRTY
-// FOURTYHOUR
-// FIFTY FIVE
-//  MINUTES
-
-
-std::vector<std::vector<int>> weatherwords = {
-    {84,85,86,87,88},       // LIGHT
-    {89,90,91,92,93},       // HEAVY
-    {83,82,81,80},        // RAIN
-    {80,79},          // NO
-    {78,77,76},         // FOR
-    {75,74},          // IN
-    {64,65,66},         // TEN
-    {67,68,69,70,71,72,73},   // FIFTEEN
-    {63,62,61,60,59,58},    // TWENTY
-    {57,56,55,54},        // RAIN2
-    {44,45,46,47,48,49,50,51},  // EXPECTED
-    {43,42},          // AN
-    {42,41,40,39},        // NEXT
-    {39,38,37,36,35,34},    // THIRTY
-    {24,25,26,27,28,29},    // FOURTY
-    {30,31,32,33},        // HOUR
-    {23,22,21,20,19},       // FIFTY
-    {17,16,15,14},        // FIVE
-    {5,6,7,8,9,10,11}     // MINUTES
-};
-
-#else
 
 #define HETIS 0
 #define VIJF  13
@@ -258,9 +151,6 @@ std::vector<std::vector<int>> ledsbyword = {
     {58,57,56,55},    // HALF
     {11,12,13}      // UUR
 };
-
-#endif
-
 
 void loop() {
     // put your main code here, to run repeatedly:
@@ -400,4 +290,60 @@ void loop() {
 
     // Update LEDs
     FastLED.show();
+}
+
+/*-------- NTP code ----------*/
+
+time_t getNtpTime()
+{
+  IPAddress ntpServerIP; // NTP server's ip address
+
+  while (Udp.parsePacket() > 0) ; // discard any previously received packets
+  Serial.println("Transmit NTP Request");
+  // get a random server from the pool
+  WiFi.hostByName(ntpServerName, ntpServerIP);
+  Serial.print(ntpServerName);
+  Serial.print(": ");
+  Serial.println(ntpServerIP);
+  sendNTPpacket(ntpServerIP);
+  uint32_t beginWait = millis();
+  while (millis() - beginWait < 1500) {
+    int size = Udp.parsePacket();
+    if (size >= NTP_PACKET_SIZE) {
+      Serial.println("Receive NTP Response");
+      Udp.read(packetBuffer, NTP_PACKET_SIZE);  // read packet into the buffer
+      unsigned long secsSince1900;
+      // convert four bytes starting at location 40 to a long integer
+      secsSince1900 =  (unsigned long)packetBuffer[40] << 24;
+      secsSince1900 |= (unsigned long)packetBuffer[41] << 16;
+      secsSince1900 |= (unsigned long)packetBuffer[42] << 8;
+      secsSince1900 |= (unsigned long)packetBuffer[43];
+      return secsSince1900 - 2208988800UL + timeZone * SECS_PER_HOUR;
+    }
+  }
+  Serial.println("No NTP Response :-(");
+  return 0; // return 0 if unable to get the time
+}
+
+// send an NTP request to the time server at the given address
+void sendNTPpacket(IPAddress &address)
+{
+  // set all bytes in the buffer to 0
+  memset(packetBuffer, 0, NTP_PACKET_SIZE);
+  // Initialize values needed to form NTP request
+  // (see URL above for details on the packets)
+  packetBuffer[0] = 0b11100011;   // LI, Version, Mode
+  packetBuffer[1] = 0;     // Stratum, or type of clock
+  packetBuffer[2] = 6;     // Polling Interval
+  packetBuffer[3] = 0xEC;  // Peer Clock Precision
+  // 8 bytes of zero for Root Delay & Root Dispersion
+  packetBuffer[12] = 49;
+  packetBuffer[13] = 0x4E;
+  packetBuffer[14] = 49;
+  packetBuffer[15] = 52;
+  // all NTP fields have been given values, now
+  // you can send a packet requesting a timestamp:
+  Udp.beginPacket(address, 123); //NTP requests are to port 123
+  Udp.write(packetBuffer, NTP_PACKET_SIZE);
+  Udp.endPacket();
 }
