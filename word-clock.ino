@@ -18,9 +18,13 @@
 #define G_VALUE         255
 #define B_VALUE         250
 
-#define BRIGHTNESS      200
+#define MIN_BRIGHTNESS  65
+#define MAX_BRIGHTNESS  200
+int     BRIGHTNESS      = MIN_BRIGHTNESS;
+int     dayHour         = 8; // Start increasing brightness
+int     nightHour       = 22; // Start decreasing brightness
 
-#define SYNC_INTERVAL   3000
+#define SYNC_INTERVAL   1200
 
 #define NUM_LEDS        95
 #define DATA_PIN        4 // D2 Pin on Wemos mini
@@ -80,7 +84,7 @@ void setup() {
     LEDS.addLeds<NEOPIXEL,DATA_PIN>(leds,NUM_LEDS);
     LEDS.setBrightness(87);
     rainbow();
-    LEDS.setBrightness(BRIGHTNESS);
+    LEDS.setBrightness(MIN_BRIGHTNESS);
     for(int i=0;i<NUM_LEDS;i++) {
         targetlevels[i] = 0;
         currentlevels[i] = 0;
@@ -152,6 +156,22 @@ std::vector<std::vector<int>> ledsbyword = {
     {11,12,13}      // UUR
 };
 
+int timeBrightness() {
+    if (hour() > dayHour && hour() < nightHour) {
+        return MAX_BRIGHTNESS;
+    } else if (hour() < dayHour || hour() > nightHour) {
+        return MIN_BRIGHTNESS;
+    } else if (hour() == dayHour) {
+        return constrain(
+                map(minute(), 0, 29, MIN_BRIGHTNESS, MAX_BRIGHTNESS),
+                MIN_BRIGHTNESS, MAX_BRIGHTNESS);
+    } else if (hour() == nightHour) {
+        return constrain(
+                map(minute(), 0, 29, MAX_BRIGHTNESS, MIN_BRIGHTNESS),
+                MIN_BRIGHTNESS, MAX_BRIGHTNESS);
+    }
+}
+
 void loop() {
     // put your main code here, to run repeatedly:
     ArduinoOTA.handle();
@@ -163,6 +183,8 @@ void loop() {
     }else{
         return;
     }
+
+    BRIGHTNESS = timeBrightness();
 
     // if not connected, then show waiting animation
     if(timeStatus() == timeNotSet) {
@@ -205,7 +227,7 @@ void loop() {
             for(int l : ledsbyword[UUR])        { targetlevels[l] = 255; }
             break;
         case 1:
-            for(int l : ledsbyword[VIJF])         { targetlevels[l] = 255; }  
+            for(int l : ledsbyword[VIJF])         { targetlevels[l] = 255; }
             for(int l : ledsbyword[OVER])         { targetlevels[l] = 255; }
             for(int l : ledsbyword[current_hourword]) { targetlevels[l] = 255; }
             break;
@@ -296,73 +318,76 @@ void loop() {
 
 time_t getNtpTime()
 {
-  IPAddress ntpServerIP; // NTP server's ip address
+    IPAddress ntpServerIP; // NTP server's ip address
 
-  while (Udp.parsePacket() > 0) ; // discard any previously received packets
-  Serial.println("Transmit NTP Request");
-  // get a random server from the pool
-  WiFi.hostByName(ntpServerName, ntpServerIP);
-  Serial.print(ntpServerName);
-  Serial.print(": ");
-  Serial.println(ntpServerIP);
-  sendNTPpacket(ntpServerIP);
-  uint32_t beginWait = millis();
-  while (millis() - beginWait < 1500) {
-    int size = Udp.parsePacket();
-    if (size >= NTP_PACKET_SIZE) {
-      Serial.println("Receive NTP Response");
-      Udp.read(packetBuffer, NTP_PACKET_SIZE);  // read packet into the buffer
-      unsigned long secsSince1900;
-      // convert four bytes starting at location 40 to a long integer
-      secsSince1900 =  (unsigned long)packetBuffer[40] << 24;
-      secsSince1900 |= (unsigned long)packetBuffer[41] << 16;
-      secsSince1900 |= (unsigned long)packetBuffer[42] << 8;
-      secsSince1900 |= (unsigned long)packetBuffer[43];
-      // New time in seconds since Jan 1, 1970
-      unsigned long newTime = secsSince1900 - 2208988800UL +
-        timeZone * SECS_PER_HOUR;
+    while (Udp.parsePacket() > 0) ; // discard any previously received packets
+    Serial.println("Transmit NTP Request");
+    // get a random server from the pool
+    WiFi.hostByName(ntpServerName, ntpServerIP);
+    Serial.print(ntpServerName);
+    Serial.print(": ");
+    Serial.println(ntpServerIP);
+    sendNTPpacket(ntpServerIP);
+    uint32_t beginWait = millis();
+    while (millis() - beginWait < 1500) {
+        int size = Udp.parsePacket();
+        if (size >= NTP_PACKET_SIZE) {
+            Serial.println("Receive NTP Response");
+            Udp.read(packetBuffer, NTP_PACKET_SIZE);  // read packet into the buffer
+            unsigned long secsSince1900;
+            // convert four bytes starting at location 40 to a long integer
+            secsSince1900 =  (unsigned long)packetBuffer[40] << 24;
+            secsSince1900 |= (unsigned long)packetBuffer[41] << 16;
+            secsSince1900 |= (unsigned long)packetBuffer[42] << 8;
+            secsSince1900 |= (unsigned long)packetBuffer[43];
+            // New time in seconds since Jan 1, 1970
+            unsigned long newTime = secsSince1900 - 2208988800UL +
+                timeZone * SECS_PER_HOUR;
 
-      // Auto DST
-      if (autoDST) {
-          if (isDSTSwitchDay(day(newTime), month(newTime), year(newTime))) {
-            if (month(newTime) == 3 && hour(newTime) >= 2) {
-                newTime += SECS_PER_HOUR;
-            } else if (month(newTime) == 10 && hour(newTime) < 2) {
-                newTime += SECS_PER_HOUR;
+            // Auto DST
+            if (autoDST) {
+                if (isDSTSwitchDay(day(newTime), month(newTime), year(newTime))) {
+                    if (month(newTime) == 3 && hour(newTime) >= 2) {
+                        newTime += SECS_PER_HOUR;
+                    } else if (month(newTime) == 10 && hour(newTime) < 2) {
+                        newTime += SECS_PER_HOUR;
+                    }
+                } else if (isDST(day(newTime), month(newTime), year(newTime))) {
+                    newTime += SECS_PER_HOUR;
+                }
             }
-          } else if (isDST(day(newTime), month(newTime), year(newTime))) {
-            newTime += SECS_PER_HOUR;
-          }
-      }
 
-      return newTime;
+            setSyncInterval(SYNC_INTERVAL);
+            return newTime;
+        }
     }
-  }
-  Serial.println("No NTP Response :-(");
-  return 0; // return 0 if unable to get the time
+    Serial.println("No NTP Response :-(");
+    // Retry soon
+    setSyncInterval(10);
+    return 0; // return 0 if unable to get the time
 }
 
 // send an NTP request to the time server at the given address
 void sendNTPpacket(IPAddress &address)
 {
-  // set all bytes in the buffer to 0
-  memset(packetBuffer, 0, NTP_PACKET_SIZE);
-  // Initialize values needed to form NTP request
-  // (see URL above for details on the packets)
-  packetBuffer[0] = 0b11100011;   // LI, Version, Mode
-  packetBuffer[1] = 0;     // Stratum, or type of clock
-  packetBuffer[2] = 6;     // Polling Interval
-  packetBuffer[3] = 0xEC;  // Peer Clock Precision
-  // 8 bytes of zero for Root Delay & Root Dispersion
-  packetBuffer[12] = 49;
-  packetBuffer[13] = 0x4E;
-  packetBuffer[14] = 49;
-  packetBuffer[15] = 52;
-  // all NTP fields have been given values, now
-  // you can send a packet requesting a timestamp:
-  Udp.beginPacket(address, 123); //NTP requests are to port 123
-  Udp.write(packetBuffer, NTP_PACKET_SIZE);
-  Udp.endPacket();
+    // set all bytes in the buffer to 0
+    memset(packetBuffer, 0, NTP_PACKET_SIZE);
+    // Initialize values needed to form NTP request
+    // (see URL above for details on the packets)
+    packetBuffer[0] = 0b11100011;   // LI, Version, Mode
+    packetBuffer[1] = 0;     // Stratum, or type of clock
+    packetBuffer[2] = 6;     // Polling Interval
+    packetBuffer[3] = 0xEC;  // Peer Clock Precision
+    // 8 bytes of zero for Root Delay & Root Dispersion
+    packetBuffer[12] = 49;
+    packetBuffer[13] = 0x4E;
+    packetBuffer[14] = 49;
+    packetBuffer[15] = 52;
+    // all NTP fields have been given values, now
+    // you can send a packet requesting a timestamp:
+    Udp.beginPacket(address, 123); //NTP requests are to port 123
+    Udp.write(packetBuffer, NTP_PACKET_SIZE);
+    Udp.endPacket();
 }
 
 // Check if Daylight saving time (DST) applies
