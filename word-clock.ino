@@ -20,7 +20,7 @@
 
 #define MIN_BRIGHTNESS  65
 #define MAX_BRIGHTNESS  200
-int     BRIGHTNESS      = MIN_BRIGHTNESS;
+#define BRIGHTNESS      255 // legacy, keep at 255
 int     dayHour         = 8; // Start increasing brightness
 int     nightHour       = 22; // Start decreasing brightness
 
@@ -184,7 +184,7 @@ void loop() {
         return;
     }
 
-    BRIGHTNESS = timeBrightness();
+    LEDS.setBrightness(timeBrightness());
 
     // if not connected, then show waiting animation
     if(timeStatus() == timeNotSet) {
