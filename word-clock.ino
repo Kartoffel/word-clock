@@ -9,7 +9,6 @@
 #include <DNSServer.h>
 #include <ESP8266WebServer.h>
 #include <WiFiManager.h>
-#include <ArduinoJson.h>
 #include <TimeLib.h>
 #include <ESP8266HTTPClient.h>
 #include <vector>
