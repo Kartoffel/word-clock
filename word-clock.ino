@@ -1,3 +1,40 @@
+/****************************************
+ * Word clock
+ * 
+ * Fork of code from https://bitbucket.org/vdham/wordclock/
+ * Dutch clockface
+ * 
+ *                                     +5V
+ *                                      ^
+ *               WEMOS D1 mini V2       |
+ *              +-----------------+     |
+ *  +-----------+3V3            5V+-----+------+ POS
+ *  |           |                 |                  Power jack
+ *  |           |              GND+-----+------+ NEG
+ * +++          |                 |     |                        ^
+ * | | LDR      |                 |     |                        |
+ * | |          |                 |     v                       --- 1000uF
+ * +++          |                 |    GND                      ---
+ *  |           |                 |         +5V                  |
+ * +++          |                 |          ^                   v
+ * | | 1k8      |                 |          |  +--------------
+ * | |          |                 |          +--+ +5V
+ * +++          |                 |   +---+     |
+ *  |           |                 +---+   +-----+ DIN   WS2812b LED strip
+ *  +-----------+A0               |   +---+     |       95 LEDs
+ *  |           +-----------------+          +--+ GND
+ * +++                                       |  +--------------
+ * | | 820                                   v
+ * | |                                      GND
+ * +++
+ *  |
+ *  v
+ * GND
+ * 
+ * 
+ */
+
+
 #define FASTLED_ESP8266_RAW_PIN_ORDER
 #define FASTLED_ALLOW_INTERRUPTS 0
 #include "FastLED.h"
@@ -13,13 +50,20 @@
 #include <ESP8266HTTPClient.h>
 #include <vector>
 
-#define R_VALUE         255
+// Use time or LDR light sensor for auto brightness adjustment.
+//#define TIME_BRIGHTNESS
+#define LDR_BRIGHTNESS
+
+const char* OTApass     = "wordclock-OTA";
+
+#define R_VALUE         0
 #define G_VALUE         255
-#define B_VALUE         250
+#define B_VALUE         0
 
 #define MIN_BRIGHTNESS  65
-#define MAX_BRIGHTNESS  200
+#define MAX_BRIGHTNESS  255
 #define BRIGHTNESS      255 // legacy, keep at 255
+int     lastBrightness  =  MIN_BRIGHTNESS;
 int     dayHour         = 8; // Start increasing brightness
 int     nightHour       = 22; // Start decreasing brightness
 
@@ -27,6 +71,10 @@ int     nightHour       = 22; // Start decreasing brightness
 
 #define NUM_LEDS        95
 #define DATA_PIN        4 // D2 Pin on Wemos mini
+
+#define LDR_PIN         A0
+#define LDR_DARK        10
+#define LDR_LIGHT       200
 
 const int   timeZone        = 1;     // Central European Time
 bool        autoDST         = true;
@@ -48,13 +96,40 @@ CRGB leds[NUM_LEDS];
 uint8_t targetlevels[NUM_LEDS];
 uint8_t currentlevels[NUM_LEDS];
 
+void rainbow();
+bool isDST(int d, int m, int y);
+bool isDSTSwitchDay(int d, int m, int y);
+void updateBrightness();
+int timeBrightness();
+
 void setup() {
+    pinMode(LDR_PIN, INPUT);
+    
     Serial.begin(115200);
 
     WiFiManager wifiManager;
 
+    String ssid = "WordClock-" + String(ESP.getChipId());
+    wifiManager.autoConnect(ssid.c_str());
+
+    Serial.println("Connected!");
+    Serial.print("IP address: ");
+    Serial.println(WiFi.localIP());
+    Serial.println("Starting UDP");
+    Udp.begin(localPort);
+
+    ArduinoOTA.setPassword(OTApass);
+
     ArduinoOTA.onStart([]() {
             Serial.println("Start");
+            for(int i=0;i<NUM_LEDS;i++) {
+                targetlevels[i] = 0;
+                currentlevels[i] = 0;
+                leds[i] = CRGB::Black;
+            }
+            leds[0] = CRGB::Red;
+        
+            FastLED.show();
             });
     ArduinoOTA.onEnd([]() {
             Serial.println("\nEnd");
@@ -69,17 +144,11 @@ void setup() {
             else if (error == OTA_CONNECT_ERROR) Serial.println("Connect Failed");
             else if (error == OTA_RECEIVE_ERROR) Serial.println("Receive Failed");
             else if (error == OTA_END_ERROR) Serial.println("End Failed");
+            ESP.restart();
             });
     ArduinoOTA.begin();
 
-    String ssid = "WordClock-" + String(ESP.getChipId());
-    wifiManager.autoConnect(ssid.c_str());
-
-    Serial.println("Connected!");
-    Serial.print("IP address: ");
-    Serial.println(WiFi.localIP());
-    Serial.println("Starting UDP");
-    Udp.begin(localPort);
+    
     LEDS.addLeds<NEOPIXEL,DATA_PIN>(leds,NUM_LEDS);
     LEDS.setBrightness(87);
     rainbow();
@@ -155,26 +224,13 @@ std::vector<std::vector<int>> ledsbyword = {
     {11,12,13}      // UUR
 };
 
-int timeBrightness() {
-    if (hour() > dayHour && hour() < nightHour) {
-        return MAX_BRIGHTNESS;
-    } else if (hour() < dayHour || hour() > nightHour) {
-        return MIN_BRIGHTNESS;
-    } else if (hour() == dayHour) {
-        return constrain(
-                map(minute(), 0, 29, MIN_BRIGHTNESS, MAX_BRIGHTNESS),
-                MIN_BRIGHTNESS, MAX_BRIGHTNESS);
-    } else if (hour() == nightHour) {
-        return constrain(
-                map(minute(), 0, 29, MAX_BRIGHTNESS, MIN_BRIGHTNESS),
-                MIN_BRIGHTNESS, MAX_BRIGHTNESS);
-    }
-}
-
 void loop() {
     // put your main code here, to run repeatedly:
     ArduinoOTA.handle();
     //  Serial.println("loop");
+    Serial.print(analogRead(LDR_PIN));
+    Serial.print(", ");
+    Serial.println(lastBrightness);
 
     // only update clock every 50ms
     if(millis()-lastdisplayupdate > 50) {
@@ -183,7 +239,12 @@ void loop() {
         return;
     }
 
-    LEDS.setBrightness(timeBrightness());
+    #ifdef TIME_BRIGHTNESS
+      LEDS.setBrightness(timeBrightness());
+    #endif
+    #ifdef LDR_BRIGHTNESS
+      updateBrightness();
+    #endif
 
     // if not connected, then show waiting animation
     if(timeStatus() == timeNotSet) {
@@ -416,4 +477,48 @@ bool isDSTSwitchDay(int d, int m, int y){
         dst = (d == ((31 - (5 * y /4 + 1) % 7)));
     }
     return dst;
+}
+
+int readAvgAnalog(int pin, byte numReadings, int readingDelay){
+    int readingsTotal = 0;
+
+    for (int i = 0; i < numReadings; i++) {
+        readingsTotal += analogRead(pin);
+        delay(readingDelay);
+    }
+
+    return readingsTotal / numReadings;
+}
+
+void updateBrightness(){
+    int brightness = map(readAvgAnalog(LDR_PIN,50,2), LDR_DARK, LDR_LIGHT, MIN_BRIGHTNESS, MAX_BRIGHTNESS);
+    brightness = constrain(brightness, MIN_BRIGHTNESS, MAX_BRIGHTNESS);
+
+    // Smooth brightness change
+    int difference = abs(brightness - lastBrightness);
+    if (brightness > lastBrightness) {
+        brightness = lastBrightness + (1 + 30 * difference / 189 );
+    }else if (brightness < lastBrightness) {
+        brightness = lastBrightness - (1 + 30 * difference / 189 );
+    }
+
+    lastBrightness = brightness;
+
+    LEDS.setBrightness(brightness);
+}
+
+int timeBrightness() {
+    if (hour() > dayHour && hour() < nightHour) {
+        return MAX_BRIGHTNESS;
+    } else if (hour() < dayHour || hour() > nightHour) {
+        return MIN_BRIGHTNESS;
+    } else if (hour() == dayHour) {
+        return constrain(
+                map(minute(), 0, 29, MIN_BRIGHTNESS, MAX_BRIGHTNESS),
+                MIN_BRIGHTNESS, MAX_BRIGHTNESS);
+    } else if (hour() == nightHour) {
+        return constrain(
+                map(minute(), 0, 29, MAX_BRIGHTNESS, MIN_BRIGHTNESS),
+                MIN_BRIGHTNESS, MAX_BRIGHTNESS);
+    }
 }
